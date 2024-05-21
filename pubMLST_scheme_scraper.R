@@ -157,7 +157,7 @@ download_scheme <- function(organismID, schemeID) {
     dir.create(destfile_path)
     cat("\nDownloading fasta files in: ", destfile_path, "\n")
 
-        ### Loop to download all alleles
+    ### Loop to download all alleles
     for (i in 1:nrow(scheme_table)) {
         cat("Downloading allele No.", i, "/", nrow(scheme_table), "\n\n")
         download.file(
