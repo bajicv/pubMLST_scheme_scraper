@@ -1,14 +1,15 @@
 ################################################################################
-# PubMLST.org webpage scraper
+# PubMLST webpage scraper (https://rest.pubmlst.org)
 #
 # Author: Vladimir Bajić
-# Date: January 2024
+# Date: 2024-05-21
 #
 # Description:
 # This script allows
-#   - listing all of the available schemes on cgMLST.org
+#   - listing all of the available schemes on PubMLST
 #   - finding the date and time of the last change on scheme of interest
-#   - downloading schemes from cgMLST.org
+#   - downloading schemes
+#   - downloading schemes profiles
 #
 #
 # Usage:
@@ -28,13 +29,6 @@
 # To download scheme
 #   Rscript --vanilla pubMLST_scheme_scraper.R -f download_scheme -o abaumannii -s 1
 #
-#
-# TODO
-# - give error message if scheme_id or orgnaism_id doesn't exist
-# - change species_id to orgnaism_id in table
-# - add organism_id in table output of listing available schemes
-# - check if same scheme exists and if so do not download
-#
 ################################################################################
 
 
@@ -42,194 +36,132 @@
 # Libraries --------------------------------------------------------------------
 suppressMessages(library(tidyverse))
 suppressMessages(library(rvest))
-library(knitr)
-library(optparse)
+suppressMessages(library(knitr))
+suppressMessages(library(optparse))
+suppressMessages(library(jsonlite))
+
+# Define base URL to PubMLST (API) ---------------------------------------------
+base_url <- "https://rest.pubmlst.org"
 
 # Functions --------------------------------------------------------------------
 
-## Function to get list of seqdef for given organisms alphabetical page
-list_seqdef_from_url <- function(url) {
-    url %>%
-        read_html() %>%
-        html_nodes("a.collection-typing") %>%
-        html_attr("href") %>%
-        return()
-}
-
-## Function to get table of seqdef, organism_id, and organism name for one page
-list_organism_info_from_url <- function(url) {
-    ### Base url to pubmlst.org
-    base_url <- "https://pubmlst.org"
-
-    html <-
-        url %>%
-        read_html()
-
-    urls <-
-        html %>%
-        html_nodes("a.collection-typing") %>%
-        html_attr("href") %>%
-        return()
-
-    species_id <-
-        urls %>%
-        str_remove("_seqdef") %>%
-        str_remove("/bigsdb\\?db=pubmlst_")
-
-    species_names <-
-        html %>%
-        html_nodes("h3") %>%
-        html_text(.)
-
-    organism_table <-
-        tibble(species_id, species_names, urls) %>%
-        mutate(urls = paste(base_url, urls, sep = ""))
-
-    return(organism_table)
-}
-
 ## Function to list all available organisms on pubMLST
 list_organisms <- function() {
-    ### Base url to pubmlst.org
-    base_url <- "https://pubmlst.org"
-
-    ### make empty tibble which will be expanded in the loop
-    organisms_tibble <- NULL
-
-    ### To make a complete list of all organisms included in pubmslt.org (n=139)
-    ### make a list of pages to be searched and include page 0 manually
-    page_list <-
-        paste(base_url, "/organisms", sep = "") %>%
-        read_html() %>%
-        html_nodes("a.page-link") %>%
-        html_attr("href") %>%
-        unique() %>%
-        append("?title=&page=0", .) %>%
-        paste(base_url, "/organisms", ., sep = "")
-
-    for (i in 1:length(page_list)) {
-        cat("Searching for organisms on pubmlst.org page:", i, "/", length(page_list), " \n")
-        tmp_tibble <- list_organism_info_from_url(page_list[i])
-        organisms_tibble <- bind_rows(organisms_tibble, tmp_tibble)
-    }
-
-    ### print in formatted way
-    organisms_tibble %>%
-        select(-urls) %>%
+    organism_table <-
+        base_url %>%
+        fromJSON() %>%
+        as_tibble() %>%
+        filter(name != "test") %>%
+        unnest(cols = c(databases), names_sep = "_") %>%
+        filter(grepl("_seqdef", databases_name)) %>%
+        filter(!grepl("requires registration", long_description)) %>%
+        select(-long_description, -description, -name) %>%
+        mutate(organism = str_remove(databases_description, " sequence/profile definitions")) %>%
+        rename(seqdefID = databases_name) %>%
+        mutate(organismID = str_remove(seqdefID, "pubmlst_")) %>%
+        mutate(organismID = str_remove(organismID, "_seqdef")) %>%
+        rename(description = databases_description) %>%
+        rename(href = databases_href) %>%
+        select(organism, organismID) %>%
         kable() %>%
         print()
 }
 
-### Function to list available schemes for given organism_id unformatted
-list_organism_schemes_raw <- function(organism_id) {
-    ### Base url to pubmlst.org
-    base_url <- "https://pubmlst.org"
-
-    ### save html
-    tmp_html <-
-        paste(base_url, "/bigsdb?db=pubmlst_", organism_id, "_seqdef&page=schemes", sep = "") %>%
-        read_html()
-
-    ### extract urls for downloads
-    download_urls <-
-        tmp_html %>%
-        html_nodes("table.resultstable a") %>% # Selecting all 'a' elements within the table
-        html_attr("href") %>%
-        tibble(Download = .) %>% # Convert to tibble
-        filter(grepl("downloadProfiles", Download, ignore.case = TRUE))
-
-    ### extract table from html
-    tmp_table <-
-        tmp_html %>%
-        html_table() %>%
-        .[[1]] %>%
-        mutate(Download = download_urls$Download) %>%
-        mutate(scheme_id = sub(".*scheme_id\\=", "", Download)) %>%
-        select(scheme_id, Name, `Last updated`, Profiles, `Curator(s)`, Description, Download)
-
-    return(tmp_table)
-}
-
-## Function to list available schemes for given organism_id formatted
-list_organism_schemes <- function(organism_id) {
-    ### print formatted table
-    list_organism_schemes_raw(organism_id) %>%
-        select(scheme_id, Name, `Last updated`, Profiles) %>%
+## Function to list available schemes for given organismID formatted
+list_organism_schemes <- function(organismID) {
+    ### Print formatted table
+    paste0("https://rest.pubmlst.org/db/pubmlst_", organismID, "_seqdef/schemes") %>%
+        fromJSON() %>%
+        .$schemes %>%
+        as_tibble() %>%
+        mutate(schemeID = basename(scheme)) %>%
+        select(schemeID, description) %>%
         kable() %>%
         print()
 }
 
-## Function to download schema PROFILES based on organism_id and scheme_id
-download_scheme_profiles <- function(oid, sid) {
-    ### Base url to pubmlst.org
-    base_url <- "https://pubmlst.org"
+## Function to list available schemes for given organismID formatted
+list_organism_cgMLST_schemes <- function(organismID) {
+    ### Print formatted table
+    paste0("https://rest.pubmlst.org/db/pubmlst_", organismID, "_seqdef/schemes") %>%
+        fromJSON() %>%
+        .$schemes %>%
+        as_tibble() %>%
+        mutate(schemeID = basename(scheme)) %>%
+        select(schemeID, description) %>%
+        filter(grepl("cgMLST", description)) %>%
+        kable() %>%
+        print()
+}
 
-    ### gather scheme information
-    sinfo <-
-        list_organism_schemes_raw(oid) %>%
-        filter(`scheme_id` == sid)
+## Function to get raw scheme information
+scheme_info_raw <- function(organismID, schemeID) {
+    paste0("https://rest.pubmlst.org/db/pubmlst_", organismID, "_seqdef/schemes/", schemeID) %>%
+        fromJSON()
+}
 
-    ### make scheme timestamp for the name of the scheme to be downloaded
-    scheme_timestamp <- paste0("sid", sinfo$scheme_id, "_LastUpdated_", sinfo$`Last updated`)
+## Function to print scheme information
+print_scheme_info <- function(organismID, schemeID) {
+    scheme_info_raw(organismID, schemeID) %>%
+        .[(names(.) %in% c("description", "id", "last_added", "last_updated", "locus_count", "records"))] %>%
+        as_tibble() %>%
+        rename(schemeID = id) %>%
+        relocate(schemeID) %>%
+        kable() %>%
+        print()
+}
 
-    ### create path to where the scheme will be downloaded
-    destfile_path <- paste0(oid, "_profiles_", scheme_timestamp, ".txt")
+## Function to download schema PROFILES based on organismID and schemeID
+download_scheme_profiles <- function(organismID, schemeID) {
+    ### Save scheme information
+    scheme_info <- scheme_info_raw(organismID, schemeID)
+
+    ### Make scheme timestamp for the name of the scheme to be downloaded
+    scheme_timestamp <- paste0("schemeID_", scheme_info$id, "_LastUpdated_", scheme_info$last_updated)
+
+    ### Create path to where the scheme will be downloaded
+    destfile_path <- paste0(organismID, "_profiles_", scheme_timestamp, ".tsv")
+    cat("\nDownloading scheme profile as: ", destfile_path, "\n")
 
     download.file(
-        paste0(base_url, "/bigsdb?db=pubmlst_", oid, "_seqdef&amp;page=downloadProfiles&amp;scheme_id=", sid, sep = ""),
+        scheme_info$profiles_csv,
         destfile = destfile_path,
         method = "auto"
     )
 }
 
 ## Function to download fasta files of alleles included in schema
-download_scheme <- function(oid, sid) {
-    ### Base url to pubmlst.org
-    base_url <- "https://pubmlst.org"
+download_scheme <- function(organismID, schemeID) {
+    ### Save scheme information
+    scheme_info <- scheme_info_raw(organismID, schemeID)
 
-    ### save html
-    tmp_html <-
-        paste(base_url, "/bigsdb?db=pubmlst_", oid, "_seqdef&page=downloadAlleles&scheme_id=", sid, sep = "") %>%
-        read_html()
-
-    ### extract download links
-    download_links <-
-        tmp_html %>%
-        html_nodes("table") %>%
-        html_nodes("a") %>%
-        html_attr("href") %>%
-        tibble(Download = .) %>% # Convert to tibble
-        filter(grepl("downloadAlleles", Download, ignore.case = TRUE)) %>%
-        mutate(Download = paste0(base_url, Download, sep = ""))
-
-    ### store table with information about scheme and alleles
+    ### Extract download links
     scheme_table <-
-        paste0(base_url, "/bigsdb?db=pubmlst_", oid, "_seqdef&amp;page=downloadAlleles&scheme_id=", sid, sep = "") %>%
-        read_html() %>%
-        html_table() %>%
-        .[[1]] %>%
-        mutate(Download = download_links$Download) %>%
-        mutate(locus_id = sub(".*locus\\=", "", Download))
+        as_tibble_col(scheme_info$loci, column_name = "loci_link") %>%
+        mutate(download_links = paste0(loci_link, "/alleles_fasta")) %>%
+        mutate(locus_id = basename(loci_link))
 
-    ### gather scheme information
-    sinfo <-
-        list_organism_schemes_raw(oid) %>%
-        filter(`scheme_id` == sid)
 
-    ### make scheme timestamp for the name of the scheme to be downloaded
-    scheme_timestamp <- paste0("schemeID_", sinfo$scheme_id, "_LastUpdated_", sinfo$`Last updated`)
+    ### Make scheme timestamp for the name of the scheme to be downloaded
+    scheme_timestamp <- paste0("schemeID_", scheme_info$id, "_LastUpdated_", scheme_info$last_updated)
 
-    ### create path to where the scheme will be downloaded
-    destfile_path <- paste0(oid, "_", scheme_timestamp)
+    ### Create path to where the scheme will be downloaded
+    destfile_path <- paste0(organismID, "_", scheme_timestamp)
 
-    ### create dir where fasta files will be stored
+    ### Check if dir already exists and if yes do not download
+    if (dir.exists(destfile_path)) {
+        stop("WARNING: ", destfile_path, " already exists. \nDownloading aborted to prevent overwriting.\n")
+    }
+
+    ### Create dir where fasta files will be stored
     dir.create(destfile_path)
+    cat("\nDownloading fasta files in: ", destfile_path, "\n")
 
-    ### loop to download all alleles
-    for (i in seq_along(scheme_table$Download)) {
-        cat("Downloading allele No.", i, "/", length(scheme_table$Download), "\n")
+    ### Loop to download all alleles
+    for (i in seq_along(scheme_table)) {
+        cat("Downloading allele No.", i, "/", length(scheme_table), "\n\n")
         download.file(
-            scheme_table$Download[i],
+            scheme_table$download_links[i],
             paste0(destfile_path, "/", scheme_table$locus_id[i], ".fasta", sep = ""),
             mode = "auto"
         )
@@ -243,18 +175,19 @@ option_list <- list(
     make_option(c("-f", "--function"),
         type = "character", metavar = "character",
         help = "Function to be performed \n\n\t\tPossible functions are:\n
-            \t| list_organisms            |   to list all available organisms on pubMLST
-            \t| list_organism_schemes     |   to list all available PubMLST schemes for a given organism_id
-            \t| download_scheme_profiles  |   to download schema PROFILES based on organism_id and scheme_id
-            \t| download_scheme           |   to download fasta files with loci and alleles included in schema \n"
+            \t| list_organisms            |   to list all available organisms on PubMLST
+            \t| list_organism_schemes     |   to list all available PubMLST schemes for a given organismID
+            \t| print_scheme_info         |   to print scheme information based on organismID and schemeID
+            \t| download_scheme_profiles  |   to download schema PROFILES based on organismID and schemeID
+            \t| download_scheme           |   to download fasta files with loci and alleles included in the schema \n"
     ),
     make_option(c("-o", "--organismID"),
         type = "character", metavar = "character",
-        help = "organism ID on which to perform function\n"
+        help = "organismID on which to perform function\n"
     ),
     make_option(c("-s", "--schemeID"),
         type = "character", metavar = "character",
-        help = "scheme ID on which to perform function\n"
+        help = "schemeID on which to perform function\n"
     )
 )
 # Parsing options
@@ -268,20 +201,26 @@ if (is.null(opt$f)) {
     list_organisms()
 } else if (opt$f == "list_organism_schemes") {
     if (is.null(opt$o)) {
-        cat("\nPlease provide organism_ID using argument '-o' for which you want to see the list of available schemes\n\n")
+        cat("\nPlease provide organismID using argument '-o' for which you want to see the list of available schemes\n\n")
     } else {
         list_organism_schemes(opt$o)
     }
 } else if (opt$f == "download_scheme_profiles") {
     if (is.null(opt$o) | is.null(opt$s)) {
-        cat("\nPlease provide organism_ID and scheme_ID using arguments '-o' and '-s'\n\n")
+        cat("\nPlease provide organismID and schemeID using arguments '-o' and '-s'\n\n")
     } else {
         download_scheme_profiles(opt$o, opt$s)
     }
 } else if (opt$f == "download_scheme") {
     if (is.null(opt$o) | is.null(opt$s)) {
-        cat("\nPlease provide organism_ID and scheme_ID using arguments '-o' and '-s'.\n\n")
+        cat("\nPlease provide organismID and schemeID using arguments '-o' and '-s'.\n\n")
     } else {
         download_scheme(opt$o, opt$s)
+    }
+} else if (opt$f == "print_scheme_info") {
+    if (is.null(opt$o) | is.null(opt$s)) {
+        cat("\nPlease provide organismID and schemeID using arguments '-o' and '-s'.\n\n")
+    } else {
+        print_scheme_info(opt$o, opt$s)
     }
 }
