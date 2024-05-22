@@ -5,7 +5,7 @@
 ## Description
 
 This R script allows
-  - listing all of the available organisms on [PubMLST.org](https://www.pubmlst.org/)
+  - listing all of the available organisms on [PubMLST API](https://rest.pubmlst.org)
   - listing all of the available schemes for a given organisms (including dates of last changes to schemes and numbers of profiles included in each of the schemes)
   - downloading specified scheme
   - downloading specified scheme profiles
