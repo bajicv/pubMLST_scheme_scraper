@@ -1,4 +1,4 @@
-# PubMLST.org webpage scraper
+# PubMLST API scraper
 
 
 
